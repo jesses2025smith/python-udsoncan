@@ -9,7 +9,7 @@ from udsoncan.common.DataFormatIdentifier import DataFormatIdentifier
 from udsoncan.common.Baudrate import Baudrate
 from udsoncan.common.IOControls import IOValues, IOMasks
 from udsoncan.common.Filesize import Filesize
-from udsoncan.connections import BaseConnection
+from udsoncan.connections import BaseConnection, PythonIsoTpConnection
 from udsoncan.BaseService import BaseService
 
 from udsoncan.exceptions import *
@@ -108,6 +108,7 @@ class Client:
     logger: logging.Logger
 
     def __init__(self, conn: BaseConnection, config: ClientConfig = default_client_config, request_timeout: Optional[float] = None):
+        super().__init__()
         self.conn = conn
         self.config = cast(ClientConfig, dict(config))  # Makes a copy of given configuration
 
@@ -375,7 +376,7 @@ class Client:
         return self.send_key._func_no_error_management(self, level, key)
 
     @standard_error_management
-    def tester_present(self) -> Optional[services.TesterPresent.InterpretedResponse]:
+    def tester_present(self, subfunction=0, timeout=0, *, target_address_type=None) -> Optional[services.TesterPresent.InterpretedResponse]:
         """
         Sends a TesterPresent request to keep the session active.
 
@@ -384,11 +385,11 @@ class Client:
         :return: The server response parsed by :meth:`TesterPresent.interpret_response<udsoncan.services.TesterPresent.interpret_response>`
         :rtype: :ref:`Response<Response>`
         """
-        req = services.TesterPresent.make_request()
+        req = services.TesterPresent.make_request(subfunction)
         assert req.subfunction is not None
 
         self.logger.info('%s - Sending TesterPresent request' % (self.service_log_prefix(services.TesterPresent)))
-        response = self.send_request(req)
+        response = self.send_request(req, timeout, target_address_type=target_address_type)
         if response is None:
             return None
 
@@ -648,7 +649,7 @@ class Client:
 
     # Performs a RoutineControl Service request
     @standard_error_management
-    def routine_control(self, routine_id: int, control_type: int, data: Optional[bytes] = None) -> Optional[services.RoutineControl.InterpretedResponse]:
+    def routine_control(self, routine_id: int, control_type: int, data: Optional[bytes] = None, timeout: float = None) -> Optional[services.RoutineControl.InterpretedResponse]:
         """
         Sends a generic request for the :ref:`RoutineControl<RoutineControl>` service with custom subfunction (control_type).
 
@@ -681,7 +682,7 @@ class Client:
         if data is not None:
             self.logger.debug("\tPayload data : %s" % binascii.hexlify(data).decode('ascii'))
 
-        response = self.send_request(request)
+        response = self.send_request(request, force_timeout=timeout)
         if response is None:
             return None
         response = services.RoutineControl.interpret_response(response)
@@ -919,7 +920,8 @@ class Client:
     @standard_error_management
     def transfer_data(self,
                       sequence_number: int,
-                      data: Optional[bytes] = None
+                      data: Optional[bytes] = None,
+                      timeout=5
                       ) -> Optional[services.TransferData.InterpretedResponse]:
         """
         Transfer a block of data to/from the client to/from the server by sending a :ref:`TransferData<TransferData>` service request and returning the server response.
@@ -933,6 +935,9 @@ class Client:
         :param data: Optional additional data to send to the server
         :type data: bytes
 
+        :param timeout: timeout value for expect response
+        :type sequence_number: float
+
         :return: The server response parsed by :meth:`TransferData.interpret_response<udsoncan.services.TransferData.interpret_response>`
         :rtype: :ref:`Response<Response>`
         """
@@ -944,7 +949,7 @@ class Client:
         if data is not None:
             self.logger.debug('Data to transfer : %s' % binascii.hexlify(data).decode('ascii'))
 
-        response = self.send_request(request)
+        response = self.send_request(request, timeout)
         if response is None:
             return None
         response = services.TransferData.interpret_response(response)
@@ -2105,14 +2110,15 @@ class Client:
 
     # Basic transmission of requests. This will need to be improved
 
-    def send_request(self, request: Request, timeout: int = -1) -> Optional[Response]:
+    def send_request(self, request: Request, timeout: int = -1, *, force_timeout: float = None, target_address_type=None) -> Optional[Response]:
         if request.service is None:
             raise ValueError("REquest has no service")
 
         if timeout < 0:
             # Timeout not provided by user: defaults to Client request_timeout value
             overall_timeout = self.config['request_timeout']
-            p2 = self.config['p2_timeout'] if self.session_timing['p2_server_max'] is None else self.session_timing['p2_server_max']
+            # p2 = self.config['p2_timeout'] if self.session_timing['p2_server_max'] is None else self.session_timing['p2_server_max']
+            p2 = self.config['p2_timeout'] if self.session_timing['p2_server_max'] is None else (self.session_timing['p2_server_max'] + 1)
             if overall_timeout is not None:
                 single_request_timeout = min(overall_timeout, p2)
             else:
@@ -2140,7 +2146,10 @@ class Client:
         if self.suppress_positive_response.enabled and not request.service.use_subfunction():
             self.logger.warning('SuppressPositiveResponse cannot be used for service %s. Ignoring' % (request.service.get_name()))
 
-        self.conn.send(payload)
+        if isinstance(self.conn, PythonIsoTpConnection):
+            self.conn.send(payload, target_address_type)
+        else:
+            self.conn.send(payload)
 
         spr_used = request.suppress_positive_response or override_suppress_positive_response
         wait_nrc = self.suppress_positive_response.enabled and self.suppress_positive_response.wait_nrc
@@ -2164,6 +2173,9 @@ class Client:
                 else:
                     timeout_type_used = 'overall'
                     timeout_value = max(overall_timeout_time - time.time(), 0)
+
+                if force_timeout is not None:
+                    timeout_value = force_timeout
 
                 payload = self.conn.wait_frame(timeout=timeout_value, exception=True)
             except TimeoutException:

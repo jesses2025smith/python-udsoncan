@@ -485,13 +485,13 @@ class PythonIsoTpConnection(BaseConnection):
         self.opened = False
         self.logger.info('Connection closed')
 
-    def specific_send(self, payload):
+    def specific_send(self, payload, *args):
         if self.mtu is not None:
             if len(payload) > self.mtu:
                 self.logger.warning("Truncating payload to be set to a length of %d" % (self.mtu))
                 payload = payload[0:self.mtu]
 
-        self.toIsoTPQueue.put(bytearray(payload))  # isotp.protocol.TransportLayer uses byte array. udsoncan is strict on bytes format
+        self.toIsoTPQueue.put((bytearray(payload), *args))  # isotp.protocol.TransportLayer uses byte array. udsoncan is strict on bytes format
 
     def specific_wait_frame(self, timeout=2):
         if not self.opened:
@@ -526,7 +526,7 @@ class PythonIsoTpConnection(BaseConnection):
         while not self.exit_requested:
             try:
                 while not self.toIsoTPQueue.empty():
-                    self.isotp_layer.send(self.toIsoTPQueue.get())
+                    self.isotp_layer.send(*self.toIsoTPQueue.get())
 
                 self.isotp_layer.process()
 

@@ -31,11 +31,11 @@ class TesterPresent(BaseService):
         service_data: "TesterPresent.ResponseData"
 
     @classmethod
-    def make_request(cls) -> Request:
+    def make_request(cls, subfunction=0) -> Request:
         """
         Generates a request for TesterPresent
         """
-        return Request(service=cls, subfunction=0)
+        return Request(service=cls, subfunction=subfunction)
 
     @classmethod
     def interpret_response(cls, response: Response) -> InterpretedResponse:
